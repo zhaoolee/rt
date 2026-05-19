@@ -191,14 +191,21 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p build/bin/rsync/bin
-          for exe in rsync ssh; do
-            if [[ -f "/usr/bin/${exe}.exe" ]]; then
-              cp "/usr/bin/${exe}.exe" build/bin/rsync/bin/
-            fi
-          done
-          # Keep the Windows zip self-contained: the MSYS2 rsync/ssh executables
-          # need the MSYS runtime DLLs even when the user has no rsync installed.
-          cp /usr/bin/msys-*.dll build/bin/rsync/bin/
+          tools=(/usr/bin/rsync.exe /usr/bin/ssh.exe)
+          cp "${tools[@]}" build/bin/rsync/bin/
+
+          # Keep the Windows zip self-contained, but do not copy unrelated
+          # MSYS2 tools (sftp/scp/ssh-agent/ssh-keygen) or every DLL in /usr/bin.
+          # cygcheck returns the DLL closure needed by rsync.exe and ssh.exe.
+          cygcheck "${tools[@]}" \
+            | awk '/\/usr\/bin\/.*\.dll$/ { print $NF }' \
+            | sort -u \
+            | while read -r dll; do
+                cp "$dll" build/bin/rsync/bin/
+              done
+
+          echo "Bundled rsync runtime files:"
+          find build/bin/rsync/bin -maxdepth 1 -type f -printf '%f\n' | sort
 
       - name: Archive build output
         shell: bash
