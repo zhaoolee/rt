@@ -166,6 +166,22 @@ func TestWindowsLocalPathForSSHKeepsDrivePath(t *testing.T) {
 	}
 }
 
+func TestWindowsMSYSPathForLocalFilesystemConvertsToDrivePath(t *testing.T) {
+	got := localFilesystemPathForOS(`/c/Users/zhaoolee/Documents`, "windows")
+	want := `C:\Users\zhaoolee\Documents`
+	if got != want {
+		t.Fatalf("windows filesystem path = %q, want %q", got, want)
+	}
+}
+
+func TestNonWindowsLocalFilesystemPathKeepsMSYSLikePath(t *testing.T) {
+	got := localFilesystemPathForOS(`/c/Users/zhaoolee/Documents`, "linux")
+	want := `/c/Users/zhaoolee/Documents`
+	if got != want {
+		t.Fatalf("non-windows filesystem path = %q, want %q", got, want)
+	}
+}
+
 func TestWindowsLocalPathForRsyncKeepsRemoteEndpoint(t *testing.T) {
 	got := rsyncEndpointForOS("oracle:/home/ubuntu/clash-sub", "windows")
 	want := "oracle:/home/ubuntu/clash-sub"

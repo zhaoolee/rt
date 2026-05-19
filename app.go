@@ -789,6 +789,31 @@ func windowsLocalPathForMSYSTool(path string) string {
 	return path
 }
 
+func localFilesystemPathForRuntime(path string) string {
+	return localFilesystemPathForOS(path, runtime.GOOS)
+}
+
+func localFilesystemPathForOS(path string, goos string) string {
+	if goos != "windows" {
+		return path
+	}
+	return msysPathToWindowsPath(path)
+}
+
+func msysPathToWindowsPath(path string) string {
+	path = strings.TrimSpace(path)
+	path = strings.ReplaceAll(path, "\\", "/")
+	if len(path) >= 3 && path[0] == '/' && path[2] == '/' && isASCIIAlpha(path[1]) {
+		drive := strings.ToUpper(path[1:2])
+		rest := strings.TrimLeft(path[3:], "/")
+		if rest == "" {
+			return drive + ":\\"
+		}
+		return drive + ":\\" + strings.ReplaceAll(rest, "/", "\\")
+	}
+	return path
+}
+
 func isRemoteEndpoint(endpoint string) bool {
 	_, _, ok := splitRemoteEndpoint(endpoint)
 	return ok
@@ -1035,11 +1060,12 @@ func runRsyncDirectToLogWithProgress(job SyncJob, log string, jobID string, emit
 		logCommandEnd(file, "ssh mkdir", nil)
 		destination = host + ":" + strings.TrimRight(remotePath, "/") + "/" + backupDir
 	} else {
-		parent := filepath.Join(destinationBase, filepath.FromSlash(backupDirectoryPrefix(job)))
+		filesystemDestinationBase := localFilesystemPathForRuntime(destinationBase)
+		parent := filepath.Join(filesystemDestinationBase, filepath.FromSlash(backupDirectoryPrefix(job)))
 		if err := os.MkdirAll(parent, 0o755); err != nil {
 			return err
 		}
-		destination = filepath.Join(destinationBase, filepath.FromSlash(backupDir))
+		destination = filepath.Join(filesystemDestinationBase, filepath.FromSlash(backupDir))
 	}
 
 	args := rsyncArgsForJob(job, destination)

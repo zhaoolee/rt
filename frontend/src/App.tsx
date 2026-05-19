@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
 import { DeleteJob, GetLogs, GetStatus, ListDirectories, ListJobs, ListMachines, RunJobNow, SaveJob } from '../wailsjs/go/main/App';
 import { main } from '../wailsjs/go/models';
@@ -207,6 +207,7 @@ function App() {
   const [now, setNow] = useState(() => new Date());
   const [picker, setPicker] = useState<PickerState | null>(null);
   const [statusMessage, setStatusMessage] = useState('');
+  const logRef = useRef<HTMLPreElement | null>(null);
 
   const selectedLog = useMemo(() => logs.find((log) => log.jobId === selectedJobId) || logs[0], [logs, selectedJobId]);
   const wailsReady = Boolean((window as any).go?.main?.App);
@@ -246,6 +247,20 @@ function App() {
     const timer = window.setInterval(() => setNow(new Date()), 1000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (!wailsReady || !runningJobId) return;
+    const timer = window.setInterval(() => {
+      GetLogs('').then((nextLogs) => setLogs(nextLogs || [])).catch((err) => setJobError(String(err)));
+    }, 800);
+    return () => window.clearInterval(timer);
+  }, [wailsReady, runningJobId]);
+
+  useEffect(() => {
+    const logElement = logRef.current;
+    if (!logElement) return;
+    logElement.scrollTop = logElement.scrollHeight;
+  }, [selectedLog?.content, selectedLog?.jobId]);
 
   function setField(key: keyof Job, value: string | boolean) {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -302,6 +317,7 @@ function App() {
 
   async function runNow(id: string) {
     setRunningJobId(id);
+    setSelectedJobId(id);
     setProgressByJob((prev) => ({ ...prev, [id]: { jobId: id, percent: 0, text: '准备同步', state: 'running' } }));
     setJobError('');
     try {
@@ -459,9 +475,9 @@ function App() {
           <div>
             <h2>同步日志</h2>
           </div>
-          <small>{selectedLog?.logPath || '暂无日志路径'}</small>
+          <small>{selectedLog?.logPath ? `${selectedLog.logPath} · 自动滚动` : '暂无日志路径'}</small>
         </div>
-        <pre>{selectedLog?.content || '暂无日志。手动执行或等待定时触发后，这里会显示 rsync 输出。'}</pre>
+        <pre ref={logRef}>{selectedLog?.content || '暂无日志。手动执行或等待定时触发后，这里会显示 rsync 输出。'}</pre>
       </section>
 
       {picker && (
