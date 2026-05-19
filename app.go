@@ -781,10 +781,11 @@ func windowsLocalPathForMSYSTool(path string) string {
 	if len(path) >= 2 && path[1] == ':' && isASCIIAlpha(path[0]) {
 		drive := strings.ToLower(path[:1])
 		rest := strings.TrimLeft(path[2:], "/")
+		prefix := "/cygdrive/" + drive
 		if rest == "" {
-			return "/" + drive
+			return prefix
 		}
-		return "/" + drive + "/" + rest
+		return prefix + "/" + rest
 	}
 	return path
 }
@@ -803,6 +804,14 @@ func localFilesystemPathForOS(path string, goos string) string {
 func msysPathToWindowsPath(path string) string {
 	path = strings.TrimSpace(path)
 	path = strings.ReplaceAll(path, "\\", "/")
+	if strings.HasPrefix(path, "/cygdrive/") && len(path) >= len("/cygdrive/c") && isASCIIAlpha(path[len("/cygdrive/")]) {
+		drive := strings.ToUpper(path[len("/cygdrive/") : len("/cygdrive/")+1])
+		rest := strings.TrimLeft(path[len("/cygdrive/")+1:], "/")
+		if rest == "" {
+			return drive + ":\\"
+		}
+		return drive + ":\\" + strings.ReplaceAll(rest, "/", "\\")
+	}
 	if len(path) >= 3 && path[0] == '/' && path[2] == '/' && isASCIIAlpha(path[1]) {
 		drive := strings.ToUpper(path[1:2])
 		rest := strings.TrimLeft(path[3:], "/")

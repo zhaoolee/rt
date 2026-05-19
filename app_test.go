@@ -152,7 +152,7 @@ func TestParseRsyncProgressPercent(t *testing.T) {
 
 func TestWindowsLocalPathForRsyncConvertsDrivePath(t *testing.T) {
 	got := rsyncEndpointForOS(`C:\Users\zhaoolee\Documents`, "windows")
-	want := "/c/Users/zhaoolee/Documents"
+	want := "/cygdrive/c/Users/zhaoolee/Documents"
 	if got != want {
 		t.Fatalf("windows rsync path = %q, want %q", got, want)
 	}
@@ -171,6 +171,14 @@ func TestWindowsMSYSPathForLocalFilesystemConvertsToDrivePath(t *testing.T) {
 	want := `C:\Users\zhaoolee\Documents`
 	if got != want {
 		t.Fatalf("windows filesystem path = %q, want %q", got, want)
+	}
+}
+
+func TestWindowsCygdrivePathForLocalFilesystemConvertsToDrivePath(t *testing.T) {
+	got := localFilesystemPathForOS(`/cygdrive/c/Users/zhaoolee/Documents`, "windows")
+	want := `C:\Users\zhaoolee\Documents`
+	if got != want {
+		t.Fatalf("windows cygdrive filesystem path = %q, want %q", got, want)
 	}
 }
 
