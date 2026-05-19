@@ -198,10 +198,13 @@ jobs:
           # MSYS2 tools (sftp/scp/ssh-agent/ssh-keygen) or every DLL in /usr/bin.
           # cygcheck returns the DLL closure needed by rsync.exe and ssh.exe.
           cygcheck "${tools[@]}" \
-            | awk '/\/usr\/bin\/.*\.dll$/ { print $NF }' \
-            | sort -u \
+            | grep -Ei '\\.dll$' \
             | while read -r dll; do
-                cp "$dll" build/bin/rsync/bin/
+                dll="${dll//$'\r'/}"
+                unix_dll=$(cygpath -u "$dll" 2>/dev/null || printf '%s' "$dll")
+                if [[ -f "$unix_dll" ]]; then
+                  cp "$unix_dll" build/bin/rsync/bin/
+                fi
               done
 
           echo "Bundled rsync runtime files:"
