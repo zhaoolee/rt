@@ -172,6 +172,28 @@ func TestPathWithToolDirPrependsPath(t *testing.T) {
 	}
 }
 
+func TestRsyncArgsForRemoteSourceUsesSSHConfigRemoteShell(t *testing.T) {
+	job := SyncJob{Source: "oracle:/home/ubuntu/clash-sub", Destination: "/backup", Options: "-az"}
+	args := rsyncArgsForJobWithRemoteShell(job, "/backup/local/任务/20260519_120000", "ssh -F /c/Users/lee/.ssh/config")
+	joined := strings.Join(args, " ")
+	for _, want := range []string{"-e", "ssh -F /c/Users/lee/.ssh/config", "oracle:/home/ubuntu/clash-sub"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("rsync args missing %q in %#v", want, args)
+		}
+	}
+}
+
+func TestRsyncArgsKeepExistingRemoteShell(t *testing.T) {
+	job := SyncJob{Source: "oracle:/src", Destination: "/backup", Options: "-az -e customssh"}
+	args := rsyncArgsForJobWithRemoteShell(job, "/backup/local/task/20260519_120000", "ssh -F /c/Users/lee/.ssh/config")
+	if strings.Count(strings.Join(args, "\x00"), "-e") != 1 {
+		t.Fatalf("remote shell duplicated: %#v", args)
+	}
+	if strings.Contains(strings.Join(args, " "), "/c/Users/lee/.ssh/config") {
+		t.Fatalf("should not override user-provided remote shell: %#v", args)
+	}
+}
+
 func TestRunShellScriptToLogAppendsOutput(t *testing.T) {
 	logFile := filepath.Join(t.TempDir(), "rt.log")
 	err := runShellScriptToLog("echo hello-from-rt", logFile)

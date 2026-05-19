@@ -434,7 +434,13 @@ func listLocalDirectories(current string) ([]DirectoryEntry, error) {
 
 func listRemoteDirectories(machineID string, current string) ([]DirectoryEntry, error) {
 	remoteCommand := "find " + shellQuote(current) + " -mindepth 1 -maxdepth 1 -type d -print"
-	cmd := newHiddenCommand("ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", machineID, remoteCommand)
+	ssh, err := findSSHExecutable()
+	if err != nil {
+		return nil, fmt.Errorf("未找到 ssh：远程目录浏览不可用: %w", err)
+	}
+	args := append(sshConfigArgsForRuntime(), "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", machineID, remoteCommand)
+	cmd := newHiddenCommand(ssh, args...)
+	cmd.Env = toolEnv(os.Environ(), filepath.Dir(ssh))
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -559,6 +565,60 @@ func findSSHExecutable() (string, error) {
 	})
 }
 
+func rsyncArgsForJob(job SyncJob, destination string) []string {
+	return rsyncArgsForJobWithRemoteShell(job, destination, rsyncRemoteShellForRuntime())
+}
+
+func rsyncArgsForJobWithRemoteShell(job SyncJob, destination string, remoteShell string) []string {
+	args := strings.Fields(ensureRsyncProgressOptions(job.Options))
+	if remoteShell != "" && (isRemoteEndpoint(job.Source) || isRemoteEndpoint(destination)) && !rsyncOptionsContainRemoteShell(args) {
+		args = append(args, "-e", remoteShell)
+	}
+	args = append(args, rsyncEndpointForRuntime(job.Source), rsyncEndpointForRuntime(destination))
+	return args
+}
+
+func rsyncOptionsContainRemoteShell(args []string) bool {
+	for _, arg := range args {
+		if arg == "-e" || arg == "--rsh" || strings.HasPrefix(arg, "--rsh=") {
+			return true
+		}
+		if strings.HasPrefix(arg, "-e") && len(arg) > 2 {
+			return true
+		}
+	}
+	return false
+}
+
+func rsyncRemoteShellForRuntime() string {
+	parts := []string{"ssh"}
+	for _, arg := range sshConfigArgsForRuntime() {
+		parts = append(parts, shellQuoteForArgString(arg))
+	}
+	return strings.Join(parts, " ")
+}
+
+func sshConfigArgsForRuntime() []string {
+	config := sshConfigPath()
+	if config == "" {
+		return nil
+	}
+	if _, err := os.Stat(config); err != nil {
+		return nil
+	}
+	return []string{"-F", pathForMSYSTool(config)}
+}
+
+func shellQuoteForArgString(s string) string {
+	if s == "" {
+		return "''"
+	}
+	if !strings.ContainsAny(s, " \t\n\r'\"") {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 func findExecutableWithBundled(name string, bundledRelative []string) (string, error) {
 	if path, err := exec.LookPath(name); err == nil {
 		return path, nil
@@ -603,6 +663,17 @@ func rsyncEndpointForOS(endpoint string, goos string) string {
 }
 
 func windowsLocalPathForRsync(path string) string {
+	return windowsLocalPathForMSYSTool(path)
+}
+
+func pathForMSYSTool(path string) string {
+	if runtime.GOOS != "windows" {
+		return path
+	}
+	return windowsLocalPathForMSYSTool(path)
+}
+
+func windowsLocalPathForMSYSTool(path string) string {
 	path = strings.ReplaceAll(path, "\\", "/")
 	if len(path) >= 2 && path[1] == ':' && isASCIIAlpha(path[0]) {
 		drive := strings.ToLower(path[:1])
@@ -615,8 +686,24 @@ func windowsLocalPathForRsync(path string) string {
 	return path
 }
 
+func isRemoteEndpoint(endpoint string) bool {
+	_, _, ok := splitRemoteEndpoint(endpoint)
+	return ok
+}
+
 func isASCIIAlpha(b byte) bool {
 	return b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z'
+}
+
+func toolEnv(env []string, toolDir string) []string {
+	env = pathWithToolDir(env, toolDir)
+	if runtime.GOOS != "windows" {
+		return env
+	}
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		env = upsertEnv(env, "HOME", pathForMSYSTool(home))
+	}
+	return env
 }
 
 func pathWithToolDir(env []string, toolDir string) []string {
@@ -636,6 +723,24 @@ func pathWithToolDir(env []string, toolDir string) []string {
 	}
 	if !found {
 		updated = append(updated, "PATH="+toolDir)
+	}
+	return updated
+}
+
+func upsertEnv(env []string, key string, value string) []string {
+	prefix := strings.ToUpper(key) + "="
+	updated := make([]string, 0, len(env)+1)
+	found := false
+	for _, item := range env {
+		if strings.HasPrefix(strings.ToUpper(item), prefix) {
+			updated = append(updated, key+"="+value)
+			found = true
+			continue
+		}
+		updated = append(updated, item)
+	}
+	if !found {
+		updated = append(updated, key+"="+value)
 	}
 	return updated
 }
@@ -752,7 +857,9 @@ func runRsyncDirectToLogWithProgress(job SyncJob, log string, jobID string, emit
 		if sshErr != nil {
 			return fmt.Errorf("未找到 ssh：远程目标创建目录不可用: %w", sshErr)
 		}
-		mkdir := newHiddenCommand(ssh, host, "mkdir -p "+shellQuote(remoteParent))
+		mkdirArgs := append(sshConfigArgsForRuntime(), host, "mkdir -p "+shellQuote(remoteParent))
+		mkdir := newHiddenCommand(ssh, mkdirArgs...)
+		mkdir.Env = toolEnv(os.Environ(), filepath.Dir(ssh))
 		mkdir.Stdout = file
 		mkdir.Stderr = file
 		if err := mkdir.Run(); err != nil {
@@ -767,10 +874,9 @@ func runRsyncDirectToLogWithProgress(job SyncJob, log string, jobID string, emit
 		destination = filepath.Join(destinationBase, filepath.FromSlash(backupDir))
 	}
 
-	args := strings.Fields(ensureRsyncProgressOptions(job.Options))
-	args = append(args, rsyncEndpointForRuntime(job.Source), rsyncEndpointForRuntime(destination))
+	args := rsyncArgsForJob(job, destination)
 	cmd := newHiddenCommand(rsync, args...)
-	cmd.Env = pathWithToolDir(os.Environ(), filepath.Dir(rsync))
+	cmd.Env = toolEnv(os.Environ(), filepath.Dir(rsync))
 	parser := newRsyncProgressParser(jobID, emit)
 	writer := &progressLogWriter{file: file, parser: parser}
 	cmd.Stdout = writer
