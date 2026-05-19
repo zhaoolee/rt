@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -91,10 +92,18 @@ func (a *App) GetStatus() Status {
 	_, cronErr := exec.LookPath("crontab")
 	_, rsyncErr := exec.LookPath("rsync")
 	message := "就绪"
-	if cronErr != nil && rsyncErr != nil {
-		message = "未找到 crontab 和 rsync，请先安装"
-	} else if cronErr != nil {
-		message = "未找到 crontab，定时任务不可用"
+	if runtime.GOOS == "windows" {
+		cronErr = nil
+		message = "Windows 版支持手动同步；系统定时任务后续接入任务计划程序"
+	}
+	if runtime.GOOS != "windows" {
+		if cronErr != nil && rsyncErr != nil {
+			message = "未找到 crontab 和 rsync，请先安装"
+		} else if cronErr != nil {
+			message = "未找到 crontab，定时任务不可用"
+		} else if rsyncErr != nil {
+			message = "未找到 rsync，同步执行不可用"
+		}
 	} else if rsyncErr != nil {
 		message = "未找到 rsync，同步执行不可用"
 	}
@@ -191,7 +200,7 @@ func (a *App) RunJobNow(id string) error {
 				return err
 			}
 			a.emitSyncProgress(job.ID, 0, "准备同步", "running")
-			if err := runShellScriptToLogWithProgress(buildRunScript(job, logPath(job.ID)), logPath(job.ID), job.ID, a.emitSyncProgress); err != nil {
+			if err := runJobToLogWithProgress(job, logPath(job.ID), a.emitSyncProgress); err != nil {
 				a.emitSyncProgress(job.ID, 0, err.Error(), "error")
 				return err
 			}
@@ -397,6 +406,9 @@ func listDirectories(machineID string, current string) ([]DirectoryEntry, error)
 		current = "/"
 	}
 	if machineID == localMachineID {
+		if runtime.GOOS == "windows" && current == "/" {
+			current = existingDirectoryOrHome("")
+		}
 		return listLocalDirectories(current)
 	}
 	return listRemoteDirectories(machineID, current)
@@ -467,6 +479,9 @@ func pathBase(path string) string {
 }
 
 func syncCrontab(jobs []SyncJob) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
 	if _, err := exec.LookPath("crontab"); err != nil {
 		return err
 	}
@@ -587,6 +602,13 @@ func runShellScriptToLog(script string, log string) error {
 	return runShellScriptToLogWithProgress(script, log, "", nil)
 }
 
+func runJobToLogWithProgress(job SyncJob, log string, emit progressEmitter) error {
+	if runtime.GOOS == "windows" {
+		return runRsyncDirectToLogWithProgress(job, log, job.ID, emit)
+	}
+	return runShellScriptToLogWithProgress(buildRunScript(job, log), log, job.ID, emit)
+}
+
 type progressEmitter func(jobID string, percent int, text string, state string)
 
 func runShellScriptToLogWithProgress(script string, log string, jobID string, emit progressEmitter) error {
@@ -599,6 +621,50 @@ func runShellScriptToLogWithProgress(script string, log string, jobID string, em
 	}
 	defer file.Close()
 	cmd := newHiddenCommand("/bin/sh", "-lc", script)
+	parser := newRsyncProgressParser(jobID, emit)
+	writer := &progressLogWriter{file: file, parser: parser}
+	cmd.Stdout = writer
+	cmd.Stderr = writer
+	return cmd.Run()
+}
+
+func runRsyncDirectToLogWithProgress(job SyncJob, log string, jobID string, emit progressEmitter) error {
+	if _, err := exec.LookPath("rsync"); err != nil {
+		return fmt.Errorf("未找到 rsync，请先安装 rsync 并加入 PATH: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(log), 0o755); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(log, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	stamp := time.Now().Format("20060102_150405")
+	backupDir := backupDirectoryName(job, stamp)
+	destinationBase := strings.TrimRight(job.Destination, "/\\")
+	destination := ""
+	if host, remotePath, ok := splitRemoteEndpoint(destinationBase); ok {
+		remoteParent := strings.TrimRight(remotePath, "/") + "/" + backupDirectoryPrefix(job)
+		mkdir := newHiddenCommand("ssh", host, "mkdir -p "+shellQuote(remoteParent))
+		mkdir.Stdout = file
+		mkdir.Stderr = file
+		if err := mkdir.Run(); err != nil {
+			return err
+		}
+		destination = host + ":" + strings.TrimRight(remotePath, "/") + "/" + backupDir
+	} else {
+		parent := filepath.Join(destinationBase, filepath.FromSlash(backupDirectoryPrefix(job)))
+		if err := os.MkdirAll(parent, 0o755); err != nil {
+			return err
+		}
+		destination = filepath.Join(destinationBase, filepath.FromSlash(backupDir))
+	}
+
+	args := strings.Fields(ensureRsyncProgressOptions(job.Options))
+	args = append(args, job.Source, destination)
+	cmd := newHiddenCommand("rsync", args...)
 	parser := newRsyncProgressParser(jobID, emit)
 	writer := &progressLogWriter{file: file, parser: parser}
 	cmd.Stdout = writer

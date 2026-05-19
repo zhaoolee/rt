@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import './App.css';
-import { DeleteJob, GetLogs, ListDirectories, ListJobs, ListMachines, RunJobNow, SaveJob } from '../wailsjs/go/main/App';
+import { DeleteJob, GetLogs, GetStatus, ListDirectories, ListJobs, ListMachines, RunJobNow, SaveJob } from '../wailsjs/go/main/App';
 import { main } from '../wailsjs/go/models';
 import { EventsOn } from '../wailsjs/runtime/runtime';
 
@@ -206,6 +206,7 @@ function App() {
   const [progressByJob, setProgressByJob] = useState<Record<string, SyncProgress>>({});
   const [now, setNow] = useState(() => new Date());
   const [picker, setPicker] = useState<PickerState | null>(null);
+  const [statusMessage, setStatusMessage] = useState('');
 
   const selectedLog = useMemo(() => logs.find((log) => log.jobId === selectedJobId) || logs[0], [logs, selectedJobId]);
   const wailsReady = Boolean((window as any).go?.main?.App);
@@ -217,10 +218,11 @@ function App() {
       setLogs([]);
       return;
     }
-    const [nextMachines, nextJobs, nextLogs] = await Promise.all([ListMachines(), ListJobs(), GetLogs('')]);
+    const [nextMachines, nextJobs, nextLogs, nextStatus] = await Promise.all([ListMachines(), ListJobs(), GetLogs(''), GetStatus()]);
     setMachines(nextMachines?.length ? nextMachines : previewMachines);
     setJobs(nextJobs || []);
     setLogs(nextLogs || []);
+    setStatusMessage(nextStatus?.message || '');
     if (!selectedJobId && nextJobs?.[0]?.id) setSelectedJobId(nextJobs[0].id);
   }
 
@@ -273,7 +275,7 @@ function App() {
     setFormNotice('');
     try {
       const saved = await SaveJob(form);
-      setFormNotice(`已保存：${saved.name}，crontab 已同步`);
+      setFormNotice(`已保存：${saved.name}${statusMessage ? ` · ${statusMessage}` : ''}`);
       setForm(emptyJob);
       setSelectedJobId(saved.id);
       await refresh();
@@ -285,7 +287,7 @@ function App() {
   }
 
   async function remove(id: string) {
-    if (!confirm('删除这个同步任务？对应 crontab 记录也会移除。')) return;
+    if (!confirm('删除这个同步任务？对应定时记录也会移除。')) return;
     setDeletingJobId(id);
     setJobError('');
     try {
@@ -407,8 +409,8 @@ function App() {
           <div className="quick">
             {['@hourly', '@daily', '@weekly', '*/30 * * * *', '0 2 * * *'].map((value) => <button key={value} onClick={() => setField('schedule', value)}>{value}</button>)}
           </div>
-          <label className="switch"><input type="checkbox" checked={form.enabled} onChange={(e) => setField('enabled', e.target.checked)} /> 启用 crontab 定时</label>
-          <button className="primary" disabled={formBusy} onClick={save}>{formBusy ? '保存中…' : '保存并同步 crontab'}</button>
+          <label className="switch"><input type="checkbox" checked={form.enabled} onChange={(e) => setField('enabled', e.target.checked)} /> 启用定时</label>
+          <button className="primary" disabled={formBusy} onClick={save}>{formBusy ? '保存中…' : '保存任务'}</button>
           {formNotice && <p className="notice">{formNotice}</p>}
         </div>
 
@@ -459,7 +461,7 @@ function App() {
           </div>
           <small>{selectedLog?.logPath || '暂无日志路径'}</small>
         </div>
-        <pre>{selectedLog?.content || '暂无日志。手动执行或等待 crontab 触发后，这里会显示 rsync 输出。'}</pre>
+        <pre>{selectedLog?.content || '暂无日志。手动执行或等待定时触发后，这里会显示 rsync 输出。'}</pre>
       </section>
 
       {picker && (
