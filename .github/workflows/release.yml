@@ -1,0 +1,184 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-amd64
+            os: windows-latest
+            platform: windows/amd64
+            arch: amd64
+            wails_args: -nsis -webview2 download
+            asset_name: rt-windows-amd64
+          - name: windows-arm64
+            os: windows-latest
+            platform: windows/arm64
+            arch: arm64
+            wails_args: -nsis -webview2 download
+            asset_name: rt-windows-arm64
+          - name: macos-amd64
+            os: macos-latest
+            platform: darwin/amd64
+            arch: amd64
+            wails_args: ''
+            asset_name: rt-macos-amd64
+          - name: macos-arm64
+            os: macos-latest
+            platform: darwin/arm64
+            arch: arm64
+            wails_args: ''
+            asset_name: rt-macos-arm64
+          - name: macos-universal
+            os: macos-latest
+            platform: darwin/universal
+            arch: universal
+            wails_args: ''
+            asset_name: rt-macos-universal
+          - name: linux-amd64
+            os: ubuntu-latest
+            platform: linux/amd64
+            arch: amd64
+            wails_args: -tags webkit2_41
+            asset_name: rt-linux-amd64
+          - name: linux-arm64
+            os: ubuntu-latest
+            platform: linux/arm64
+            arch: arm64
+            wails_args: -tags webkit2_41
+            asset_name: rt-linux-arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Setup Python for packaging
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install Wails CLI
+        shell: bash
+        run: |
+          go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Install Windows packaging tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install nsis -y
+
+      - name: Install Linux dependencies amd64
+        if: runner.os == 'Linux' && matrix.arch == 'amd64'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev
+
+      - name: Install Linux dependencies arm64
+        if: runner.os == 'Linux' && matrix.arch == 'arm64'
+        shell: bash
+        run: |
+          sudo dpkg --add-architecture arm64
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            pkg-config \
+            libgtk-3-dev:arm64 \
+            libwebkit2gtk-4.1-dev:arm64
+
+      - name: Install frontend dependencies
+        shell: bash
+        run: npm ci
+        working-directory: frontend
+
+      - name: Build Wails app
+        shell: bash
+        run: |
+          if [[ "${{ runner.os }}" == "Linux" && "${{ matrix.arch }}" == "arm64" ]]; then
+            export CC=aarch64-linux-gnu-gcc
+            export CXX=aarch64-linux-gnu-g++
+            export CGO_ENABLED=1
+            export PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+          fi
+          wails build -clean -platform "${{ matrix.platform }}" ${{ matrix.wails_args }}
+
+      - name: Archive build output
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile, ZIP_DEFLATED
+          import os
+
+          source = Path('build/bin')
+          if not source.exists():
+              raise SystemExit('build/bin was not created')
+
+          out_dir = Path('release-assets')
+          out_dir.mkdir(exist_ok=True)
+          asset = out_dir / (os.environ['ASSET_NAME'] + '.zip')
+
+          with ZipFile(asset, 'w', ZIP_DEFLATED) as zf:
+              for path in source.rglob('*'):
+                  if path.is_file():
+                      zf.write(path, path.relative_to(source))
+
+          print(asset)
+          PY
+        env:
+          ASSET_NAME: ${{ matrix.asset_name }}
+
+      - name: Upload GitHub Actions artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: release-assets/${{ matrix.asset_name }}.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Upload assets to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*.zip
+          generate_release_notes: true
