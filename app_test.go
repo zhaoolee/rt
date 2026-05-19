@@ -149,6 +149,29 @@ func TestParseRsyncProgressPercent(t *testing.T) {
 	}
 }
 
+func TestWindowsLocalPathForRsyncConvertsDrivePath(t *testing.T) {
+	got := rsyncEndpointForOS(`C:\Users\zhaoolee\Documents`, "windows")
+	want := "/c/Users/zhaoolee/Documents"
+	if got != want {
+		t.Fatalf("windows rsync path = %q, want %q", got, want)
+	}
+}
+
+func TestWindowsLocalPathForRsyncKeepsRemoteEndpoint(t *testing.T) {
+	got := rsyncEndpointForOS("oracle:/home/ubuntu/clash-sub", "windows")
+	want := "oracle:/home/ubuntu/clash-sub"
+	if got != want {
+		t.Fatalf("remote endpoint changed = %q, want %q", got, want)
+	}
+}
+
+func TestPathWithToolDirPrependsPath(t *testing.T) {
+	got := pathWithToolDir([]string{"Path=C:\\Windows", "OTHER=1"}, `C:\rt\rsync\bin`)
+	if got[0] != `Path=C:\rt\rsync\bin`+string(os.PathListSeparator)+`C:\Windows` {
+		t.Fatalf("PATH not prepended: %#v", got)
+	}
+}
+
 func TestRunShellScriptToLogAppendsOutput(t *testing.T) {
 	logFile := filepath.Join(t.TempDir(), "rt.log")
 	err := runShellScriptToLog("echo hello-from-rt", logFile)

@@ -90,11 +90,11 @@ func (a *App) startup(ctx context.Context) { a.ctx = ctx }
 
 func (a *App) GetStatus() Status {
 	_, cronErr := exec.LookPath("crontab")
-	_, rsyncErr := exec.LookPath("rsync")
+	_, rsyncErr := findRsyncExecutable()
 	message := "就绪"
 	if runtime.GOOS == "windows" {
 		cronErr = nil
-		message = "Windows 版支持手动同步；系统定时任务后续接入任务计划程序"
+		message = "Windows 版已内置 rsync；系统定时任务后续接入任务计划程序"
 	}
 	if runtime.GOOS != "windows" {
 		if cronErr != nil && rsyncErr != nil {
@@ -105,7 +105,7 @@ func (a *App) GetStatus() Status {
 			message = "未找到 rsync，同步执行不可用"
 		}
 	} else if rsyncErr != nil {
-		message = "未找到 rsync，同步执行不可用"
+		message = "未找到 rsync：请下载新版完整包，或把 rsync.exe 加入 PATH"
 	}
 	return Status{CrontabAvailable: cronErr == nil, RsyncAvailable: rsyncErr == nil, StoreDir: appDir(), Message: message}
 }
@@ -545,10 +545,110 @@ func buildPrepareDestinationParentScript(destinationBase string, backupPrefix st
 	return "mkdir -p " + shellQuote(strings.TrimRight(destinationBase, "/")+"/"+backupPrefix)
 }
 
+func findRsyncExecutable() (string, error) {
+	return findExecutableWithBundled("rsync", []string{
+		filepath.Join("rsync", "bin", executableName("rsync")),
+		filepath.Join("rsync", executableName("rsync")),
+	})
+}
+
+func findSSHExecutable() (string, error) {
+	return findExecutableWithBundled("ssh", []string{
+		filepath.Join("rsync", "bin", executableName("ssh")),
+		filepath.Join("rsync", executableName("ssh")),
+	})
+}
+
+func findExecutableWithBundled(name string, bundledRelative []string) (string, error) {
+	if path, err := exec.LookPath(name); err == nil {
+		return path, nil
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	base := filepath.Dir(exe)
+	for _, rel := range bundledRelative {
+		candidate := filepath.Join(base, rel)
+		if info, statErr := os.Stat(candidate); statErr == nil && !info.IsDir() {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("%s not found", name)
+}
+
+func executableName(name string) string {
+	if runtime.GOOS == "windows" && !strings.HasSuffix(strings.ToLower(name), ".exe") {
+		return name + ".exe"
+	}
+	return name
+}
+
+func rsyncEndpointForRuntime(endpoint string) string {
+	if runtime.GOOS != "windows" {
+		return endpoint
+	}
+	return rsyncEndpointForOS(endpoint, "windows")
+}
+
+func rsyncEndpointForOS(endpoint string, goos string) string {
+	endpoint = strings.TrimSpace(endpoint)
+	if goos != "windows" || endpoint == "" {
+		return endpoint
+	}
+	if _, _, ok := splitRemoteEndpoint(endpoint); ok {
+		return endpoint
+	}
+	return windowsLocalPathForRsync(endpoint)
+}
+
+func windowsLocalPathForRsync(path string) string {
+	path = strings.ReplaceAll(path, "\\", "/")
+	if len(path) >= 2 && path[1] == ':' && isASCIIAlpha(path[0]) {
+		drive := strings.ToLower(path[:1])
+		rest := strings.TrimLeft(path[2:], "/")
+		if rest == "" {
+			return "/" + drive
+		}
+		return "/" + drive + "/" + rest
+	}
+	return path
+}
+
+func isASCIIAlpha(b byte) bool {
+	return b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z'
+}
+
+func pathWithToolDir(env []string, toolDir string) []string {
+	if toolDir == "" {
+		return env
+	}
+	separator := string(os.PathListSeparator)
+	updated := make([]string, 0, len(env)+1)
+	found := false
+	for _, item := range env {
+		if strings.HasPrefix(strings.ToUpper(item), "PATH=") {
+			updated = append(updated, item[:5]+toolDir+separator+item[5:])
+			found = true
+			continue
+		}
+		updated = append(updated, item)
+	}
+	if !found {
+		updated = append(updated, "PATH="+toolDir)
+	}
+	return updated
+}
+
 func splitRemoteEndpoint(endpoint string) (host string, path string, ok bool) {
 	idx := strings.Index(endpoint, ":")
 	if idx <= 0 || strings.Contains(endpoint[:idx], "/") {
 		return "", "", false
+	}
+	if idx == 1 && isASCIIAlpha(endpoint[0]) {
+		if len(endpoint) == 2 || endpoint[2] == '/' || endpoint[2] == '\\' {
+			return "", "", false
+		}
 	}
 	return endpoint[:idx], endpoint[idx+1:], true
 }
@@ -629,8 +729,9 @@ func runShellScriptToLogWithProgress(script string, log string, jobID string, em
 }
 
 func runRsyncDirectToLogWithProgress(job SyncJob, log string, jobID string, emit progressEmitter) error {
-	if _, err := exec.LookPath("rsync"); err != nil {
-		return fmt.Errorf("未找到 rsync，请先安装 rsync 并加入 PATH: %w", err)
+	rsync, err := findRsyncExecutable()
+	if err != nil {
+		return fmt.Errorf("未找到 rsync：请下载新版完整包，或把 rsync.exe 加入 PATH: %w", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(log), 0o755); err != nil {
 		return err
@@ -647,7 +748,11 @@ func runRsyncDirectToLogWithProgress(job SyncJob, log string, jobID string, emit
 	destination := ""
 	if host, remotePath, ok := splitRemoteEndpoint(destinationBase); ok {
 		remoteParent := strings.TrimRight(remotePath, "/") + "/" + backupDirectoryPrefix(job)
-		mkdir := newHiddenCommand("ssh", host, "mkdir -p "+shellQuote(remoteParent))
+		ssh, sshErr := findSSHExecutable()
+		if sshErr != nil {
+			return fmt.Errorf("未找到 ssh：远程目标创建目录不可用: %w", sshErr)
+		}
+		mkdir := newHiddenCommand(ssh, host, "mkdir -p "+shellQuote(remoteParent))
 		mkdir.Stdout = file
 		mkdir.Stderr = file
 		if err := mkdir.Run(); err != nil {
@@ -663,8 +768,9 @@ func runRsyncDirectToLogWithProgress(job SyncJob, log string, jobID string, emit
 	}
 
 	args := strings.Fields(ensureRsyncProgressOptions(job.Options))
-	args = append(args, job.Source, destination)
-	cmd := newHiddenCommand("rsync", args...)
+	args = append(args, rsyncEndpointForRuntime(job.Source), rsyncEndpointForRuntime(destination))
+	cmd := newHiddenCommand(rsync, args...)
+	cmd.Env = pathWithToolDir(os.Environ(), filepath.Dir(rsync))
 	parser := newRsyncProgressParser(jobID, emit)
 	writer := &progressLogWriter{file: file, parser: parser}
 	cmd.Stdout = writer
