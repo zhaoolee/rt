@@ -108,6 +108,44 @@ jobs:
         shell: bash
         run: |
           sudo dpkg --add-architecture arm64
+
+          # GitHub's Ubuntu amd64 runners use archive/security.ubuntu.com for
+          # native packages, but Ubuntu arm64 packages live on ports.ubuntu.com.
+          # Restrict the default Ubuntu sources to amd64 before adding arm64
+          # ports sources, otherwise apt tries security.ubuntu.com arm64 and 404s.
+          sudo python3 - <<'PY'
+          from pathlib import Path
+
+          for path in Path('/etc/apt/sources.list.d').glob('*.sources'):
+              text = path.read_text()
+              if 'ubuntu.com/ubuntu' not in text:
+                  continue
+              blocks = text.split('\n\n')
+              changed = False
+              new_blocks = []
+              for block in blocks:
+                  if 'ubuntu.com/ubuntu' in block and 'Architectures:' not in block:
+                      lines = block.splitlines()
+                      for i, line in enumerate(lines):
+                          if line.startswith('Types:'):
+                              lines.insert(i + 1, 'Architectures: amd64')
+                              changed = True
+                              break
+                      block = '\n'.join(lines)
+                  new_blocks.append(block)
+              if changed:
+                  path.write_text('\n\n'.join(new_blocks))
+          PY
+
+          sudo tee /etc/apt/sources.list.d/ubuntu-arm64-ports.sources >/dev/null <<'EOF'
+          Types: deb
+          Architectures: arm64
+          URIs: http://ports.ubuntu.com/ubuntu-ports
+          Suites: noble noble-updates noble-backports noble-security
+          Components: main restricted universe multiverse
+          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+          EOF
+
           sudo apt-get update
           sudo apt-get install -y \
             gcc-aarch64-linux-gnu \
