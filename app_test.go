@@ -213,6 +213,18 @@ func TestWindowsSSHArgsPinKnownHostsAndAcceptNew(t *testing.T) {
 	}
 }
 
+func TestNormalizeWindowsSSHConfigExpandsTildeIdentityFile(t *testing.T) {
+	config := "Host oracle\n  HostName 132.145.161.227\n  User ubuntu\n  IdentityFile ~/.ssh/v2fy.com\n"
+	got := normalizeWindowsSSHConfig(config, "C:/Users/zhaoolee")
+	want := "IdentityFile C:/Users/zhaoolee/.ssh/v2fy.com"
+	if !strings.Contains(got, want) {
+		t.Fatalf("normalized config missing %q in %q", want, got)
+	}
+	if strings.Contains(got, "~/.ssh/v2fy.com") {
+		t.Fatalf("tilde identity should be expanded: %q", got)
+	}
+}
+
 func TestNonWindowsSSHArgsDoNotChangeHostKeyPolicy(t *testing.T) {
 	args := sshArgsForOS("/home/lee/.ssh/config", "/home/lee/.ssh/known_hosts", "linux")
 	joined := strings.Join(args, " ")

@@ -623,7 +623,7 @@ func sshConfigArgsForRuntime() []string {
 	configForArgs := ""
 	if config != "" {
 		if _, err := os.Stat(config); err == nil {
-			configForArgs = pathForSSHTool(config)
+			configForArgs = sshConfigPathForRuntime(config)
 		}
 	}
 	knownHostsForArgs := ""
@@ -631,6 +631,60 @@ func sshConfigArgsForRuntime() []string {
 		knownHostsForArgs = pathForSSHTool(knownHosts)
 	}
 	return sshArgsForOS(configForArgs, knownHostsForArgs, runtime.GOOS)
+}
+
+func sshConfigPathForRuntime(config string) string {
+	if runtime.GOOS != "windows" {
+		return pathForSSHTool(config)
+	}
+	data, err := os.ReadFile(config)
+	if err != nil {
+		return pathForSSHTool(config)
+	}
+	home := sshHomeDirFromEnv(os.Getenv, func() (string, error) { return os.UserHomeDir() })
+	normalized := normalizeWindowsSSHConfig(string(data), windowsLocalPathForSSHTool(home))
+	if normalized == string(data) {
+		return pathForSSHTool(config)
+	}
+	runtimeConfig := filepath.Join(appDir(), "ssh_config_windows")
+	if err := os.MkdirAll(filepath.Dir(runtimeConfig), 0o755); err != nil {
+		return pathForSSHTool(config)
+	}
+	if err := os.WriteFile(runtimeConfig, []byte(normalized), 0o600); err != nil {
+		return pathForSSHTool(config)
+	}
+	return pathForSSHTool(runtimeConfig)
+}
+
+func normalizeWindowsSSHConfig(config string, home string) string {
+	if strings.TrimSpace(home) == "" {
+		return config
+	}
+	home = strings.TrimRight(windowsLocalPathForSSHTool(home), "/")
+	lines := strings.Split(config, "\n")
+	changed := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		fields := strings.Fields(trimmed)
+		if len(fields) < 2 || strings.ToLower(fields[0]) != "identityfile" {
+			continue
+		}
+		value := strings.Trim(fields[1], `"'`)
+		if !strings.HasPrefix(value, "~/") && !strings.HasPrefix(value, `~\`) {
+			continue
+		}
+		indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+		rest := strings.TrimLeft(value[1:], `/\`)
+		lines[i] = indent + "IdentityFile " + home + "/" + strings.ReplaceAll(rest, `\`, "/")
+		changed = true
+	}
+	if !changed {
+		return config
+	}
+	return strings.Join(lines, "\n")
 }
 
 func sshArgsForOS(config string, knownHosts string, goos string) []string {
