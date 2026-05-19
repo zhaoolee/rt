@@ -1,12 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import './App.css';
-import { DeleteJob, GetLogs, GetStatus, ListDirectories, ListJobs, ListMachines, RunJobNow, SaveJob } from '../wailsjs/go/main/App';
+import { DeleteJob, GetLogs, ListDirectories, ListJobs, ListMachines, RunJobNow, SaveJob } from '../wailsjs/go/main/App';
 import { main } from '../wailsjs/go/models';
 import { EventsOn } from '../wailsjs/runtime/runtime';
 
 type Job = main.SyncJob;
 type LogEntry = main.LogEntry;
-type Status = main.Status;
 type Machine = main.Machine;
 type DirectoryEntry = main.DirectoryEntry;
 type EndpointKind = 'source' | 'destination';
@@ -197,7 +196,6 @@ function App() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [machines, setMachines] = useState<Machine[]>(previewMachines);
-  const [status, setStatus] = useState<Status | null>(null);
   const [form, setForm] = useState<Job>(emptyJob);
   const [selectedJobId, setSelectedJobId] = useState('');
   const [formNotice, setFormNotice] = useState('');
@@ -214,14 +212,12 @@ function App() {
 
   async function refresh() {
     if (!wailsReady) {
-      setStatus({ crontabAvailable: true, rsyncAvailable: true, storeDir: '~/.config/rt', message: '设计预览模式' });
       setMachines(previewMachines);
       setJobs([]);
       setLogs([]);
       return;
     }
-    const [nextStatus, nextMachines, nextJobs, nextLogs] = await Promise.all([GetStatus(), ListMachines(), ListJobs(), GetLogs('')]);
-    setStatus(nextStatus);
+    const [nextMachines, nextJobs, nextLogs] = await Promise.all([ListMachines(), ListJobs(), GetLogs('')]);
     setMachines(nextMachines?.length ? nextMachines : previewMachines);
     setJobs(nextJobs || []);
     setLogs(nextLogs || []);
@@ -372,24 +368,10 @@ function App() {
 
   return (
     <main className="shell">
-      <section className="hero">
-        <div>
-          <p className="eyebrow">RT · rsync tasker</p>
-          <h1>rsync定时同步</h1>
-          <p className="subtle">像 Hyper Backup 一样先选机器，再选路径；机器来自 ~/.ssh/config，也可以选择当前机器。</p>
-        </div>
-        <div className="status-card">
-          <span className="dot" />
-          <strong>{status?.message || '检查环境中…'}</strong>
-          <small>{status?.storeDir}</small>
-        </div>
-      </section>
-
       <section className="grid">
         <div className="panel composer">
           <div className="panel-head">
             <div>
-              <p className="eyebrow">New schedule</p>
               <h2>{form.id ? '编辑同步任务' : '新建同步任务'}</h2>
             </div>
             {form.id && <button className="ghost" onClick={() => setForm(emptyJob)}>新建</button>}
@@ -433,7 +415,6 @@ function App() {
         <div className="panel jobs">
           <div className="panel-head">
             <div>
-              <p className="eyebrow">Jobs</p>
               <h2>同步任务</h2>
             </div>
             <button className="ghost" onClick={() => refresh()}>刷新</button>
@@ -474,7 +455,6 @@ function App() {
       <section className="panel log-panel">
         <div className="panel-head">
           <div>
-            <p className="eyebrow">Logs</p>
             <h2>同步日志</h2>
           </div>
           <small>{selectedLog?.logPath || '暂无日志路径'}</small>
