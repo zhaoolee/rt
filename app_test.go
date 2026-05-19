@@ -68,6 +68,31 @@ Host github.com
 	}
 }
 
+func TestSSHConfigPathUsesUserHomeDir(t *testing.T) {
+	got := sshConfigPathFromEnv(func(string) string { return "" }, func() (string, error) { return filepath.Join("C:", "Users", "lee"), nil })
+	want := filepath.Join("C:", "Users", "lee", ".ssh", "config")
+	if got != want {
+		t.Fatalf("ssh config path = %q, want %q", got, want)
+	}
+}
+
+func TestSSHConfigPathFallsBackToWindowsUserProfile(t *testing.T) {
+	env := map[string]string{"USERPROFILE": filepath.Join("C:", "Users", "lee")}
+	got := sshConfigPathFromEnv(func(key string) string { return env[key] }, func() (string, error) { return "", os.ErrNotExist })
+	want := filepath.Join("C:", "Users", "lee", ".ssh", "config")
+	if got != want {
+		t.Fatalf("ssh config path = %q, want %q", got, want)
+	}
+}
+
+func TestSSHConfigPathFallsBackToHomeDriveHomePath(t *testing.T) {
+	env := map[string]string{"HOMEDRIVE": "C:", "HOMEPATH": `\Users\lee`}
+	got := sshConfigPathFromEnv(func(key string) string { return env[key] }, func() (string, error) { return "", os.ErrNotExist })
+	if !strings.Contains(got, "Users") || !strings.HasSuffix(got, filepath.Join(".ssh", "config")) {
+		t.Fatalf("unexpected ssh config path: %q", got)
+	}
+}
+
 func TestBuildCronLineContainsMarkerAndLogPath(t *testing.T) {
 	job, err := normalizeJob(SyncJob{ID: "job-123", Name: "docs", Source: "/home/me/a", Destination: "/mnt/b", Schedule: "*/15 * * * *", Options: "-az"})
 	if err != nil {

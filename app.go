@@ -323,7 +323,10 @@ func existingDirectoryOrHome(path string) string {
 func listMachines() ([]Machine, error) {
 	host, _ := os.Hostname()
 	machines := []Machine{{ID: localMachineID, Name: "当前机器", Kind: "local", Address: host}}
-	configPath := filepath.Join(os.Getenv("HOME"), ".ssh", "config")
+	configPath := sshConfigPath()
+	if configPath == "" {
+		return machines, nil
+	}
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -335,6 +338,31 @@ func listMachines() ([]Machine, error) {
 		machines = append(machines, Machine{ID: host, Name: host, Kind: "ssh", Address: host})
 	}
 	return machines, nil
+}
+
+func sshConfigPath() string {
+	return sshConfigPathFromEnv(os.Getenv, func() (string, error) { return os.UserHomeDir() })
+}
+
+func sshConfigPathFromEnv(getenv func(string) string, userHomeDir func() (string, error)) string {
+	home, err := userHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		home = strings.TrimSpace(getenv("HOME"))
+	}
+	if strings.TrimSpace(home) == "" {
+		home = strings.TrimSpace(getenv("USERPROFILE"))
+	}
+	if strings.TrimSpace(home) == "" {
+		drive := strings.TrimSpace(getenv("HOMEDRIVE"))
+		path := strings.TrimSpace(getenv("HOMEPATH"))
+		if drive != "" && path != "" {
+			home = drive + path
+		}
+	}
+	if strings.TrimSpace(home) == "" {
+		return ""
+	}
+	return filepath.Join(home, ".ssh", "config")
 }
 
 func parseSSHConfigHosts(config string) []string {
