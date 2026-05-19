@@ -174,6 +174,17 @@ func TestWindowsMSYSPathForLocalFilesystemConvertsToDrivePath(t *testing.T) {
 	}
 }
 
+func TestEnsureTrailingPathSeparator(t *testing.T) {
+	got := ensureTrailingPathSeparator(filepath.Join("backup", "oracle", "oracle-clash", "20260519_191703"))
+	if !strings.HasSuffix(got, string(os.PathSeparator)) {
+		t.Fatalf("destination should end with path separator: %q", got)
+	}
+	again := ensureTrailingPathSeparator(got)
+	if again != got {
+		t.Fatalf("separator should not duplicate: %q -> %q", got, again)
+	}
+}
+
 func TestNonWindowsLocalFilesystemPathKeepsMSYSLikePath(t *testing.T) {
 	got := localFilesystemPathForOS(`/c/Users/zhaoolee/Documents`, "linux")
 	want := `/c/Users/zhaoolee/Documents`

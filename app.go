@@ -1060,12 +1060,13 @@ func runRsyncDirectToLogWithProgress(job SyncJob, log string, jobID string, emit
 		logCommandEnd(file, "ssh mkdir", nil)
 		destination = host + ":" + strings.TrimRight(remotePath, "/") + "/" + backupDir
 	} else {
-		filesystemDestinationBase := localFilesystemPathForRuntime(destinationBase)
-		parent := filepath.Join(filesystemDestinationBase, filepath.FromSlash(backupDirectoryPrefix(job)))
-		if err := os.MkdirAll(parent, 0o755); err != nil {
+		_, finalDestination, rsyncDestination := localBackupDestinationPaths(destinationBase, backupDir)
+		if err := os.MkdirAll(finalDestination, 0o755); err != nil {
+			writeRunLogLine(file, "local destination prepare failed: %s err=%v", finalDestination, err)
 			return err
 		}
-		destination = filepath.Join(filesystemDestinationBase, filepath.FromSlash(backupDir))
+		writeRunLogLine(file, "local destination prepared: %s", fileStateForLog(finalDestination))
+		destination = rsyncDestination
 	}
 
 	args := rsyncArgsForJob(job, destination)
@@ -1080,6 +1081,23 @@ func runRsyncDirectToLogWithProgress(job SyncJob, log string, jobID string, emit
 	logCommandEnd(file, "rsync", err)
 	writeRunLogLine(file, "rt end job=%s", jobID)
 	return err
+}
+
+func localBackupDestinationPaths(destinationBase string, backupDir string) (base string, final string, rsyncDestination string) {
+	base = localFilesystemPathForRuntime(destinationBase)
+	final = filepath.Join(base, filepath.FromSlash(backupDir))
+	rsyncDestination = ensureTrailingPathSeparator(final)
+	return base, final, rsyncDestination
+}
+
+func ensureTrailingPathSeparator(path string) string {
+	if path == "" {
+		return path
+	}
+	if strings.HasSuffix(path, "/") || strings.HasSuffix(path, `\`) {
+		return path
+	}
+	return path + string(os.PathSeparator)
 }
 
 type progressLogWriter struct {
