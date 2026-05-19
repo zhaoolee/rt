@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
 import { DeleteJob, GetLogs, GetStatus, ListDirectories, ListJobs, ListMachines, RunJobNow, SaveJob } from '../wailsjs/go/main/App';
 import { main } from '../wailsjs/go/models';
-import { EventsOn } from '../wailsjs/runtime/runtime';
+import { EventsOn, WindowSetTitle } from '../wailsjs/runtime/runtime';
 
 type Job = main.SyncJob;
 type LogEntry = main.LogEntry;
@@ -31,6 +31,7 @@ type PickerState = {
 };
 
 const LOCAL_MACHINE_ID = 'local';
+const APP_VERSION = import.meta.env.VITE_APP_VERSION || 'dev';
 
 const emptyJob: Job = {
   id: '',
@@ -232,6 +233,12 @@ function App() {
   }, []);
 
   useEffect(() => {
+    const title = `RSYNC定时同步 ${APP_VERSION}`;
+    document.title = title;
+    if (wailsReady) WindowSetTitle(title);
+  }, [wailsReady]);
+
+  useEffect(() => {
     if (!wailsReady) return;
     const cancel = EventsOn('sync-progress', (progress: SyncProgress) => {
       if (!progress?.jobId) return;
@@ -386,6 +393,14 @@ function App() {
 
   return (
     <main className="shell">
+      <header className="app-title">
+        <div>
+          <p className="eyebrow">RSYNC TASKER</p>
+          <h1>RSYNC定时同步</h1>
+        </div>
+        <span className="version-badge">{APP_VERSION}</span>
+      </header>
+
       <section className="grid">
         <div className="panel composer">
           <div className="panel-head">

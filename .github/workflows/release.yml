@@ -176,6 +176,8 @@ jobs:
 
       - name: Build Wails app
         shell: bash
+        env:
+          VITE_APP_VERSION: ${{ github.ref_name }}
         run: |
           if [[ "${{ runner.os }}" == "Linux" && "${{ matrix.arch }}" == "arm64" ]]; then
             export CC=aarch64-linux-gnu-gcc
