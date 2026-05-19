@@ -827,6 +827,60 @@ func runJobToLogWithProgress(job SyncJob, log string, emit progressEmitter) erro
 
 type progressEmitter func(jobID string, percent int, text string, state string)
 
+func logTimestamp() string {
+	return time.Now().Format("2006-01-02-15-04-05")
+}
+
+func writeRunLogLine(file *os.File, format string, args ...any) {
+	_, _ = fmt.Fprintf(file, "[%s] %s\n", logTimestamp(), fmt.Sprintf(format, args...))
+}
+
+func logCommandStart(file *os.File, label string, executable string, args []string, env []string) {
+	writeRunLogLine(file, "%s command: %s %s", label, executable, strings.Join(quoteArgsForLog(args), " "))
+	if runtime.GOOS == "windows" {
+		writeRunLogLine(file, "%s env HOME=%s USERPROFILE=%s", label, envValue(env, "HOME"), envValue(env, "USERPROFILE"))
+		writeRunLogLine(file, "%s ssh config: %s", label, fileStateForLog(sshConfigPath()))
+		writeRunLogLine(file, "%s known_hosts: %s", label, fileStateForLog(filepath.Join(windowsLocalPathForSSHTool(envValue(env, "HOME")), ".ssh", "known_hosts")))
+	}
+}
+
+func logCommandEnd(file *os.File, label string, err error) {
+	if err != nil {
+		writeRunLogLine(file, "%s exit: %v", label, err)
+		return
+	}
+	writeRunLogLine(file, "%s exit: 0", label)
+}
+
+func quoteArgsForLog(args []string) []string {
+	quoted := make([]string, 0, len(args))
+	for _, arg := range args {
+		quoted = append(quoted, shellQuoteForArgString(arg))
+	}
+	return quoted
+}
+
+func envValue(env []string, key string) string {
+	prefix := strings.ToUpper(key) + "="
+	for _, item := range env {
+		if strings.HasPrefix(strings.ToUpper(item), prefix) {
+			return item[len(key)+1:]
+		}
+	}
+	return ""
+}
+
+func fileStateForLog(path string) string {
+	if strings.TrimSpace(path) == "" {
+		return "未设置"
+	}
+	if info, err := os.Stat(path); err == nil {
+		return fmt.Sprintf("%s 存在 size=%d", path, info.Size())
+	} else {
+		return fmt.Sprintf("%s 不存在: %v", path, err)
+	}
+}
+
 func runShellScriptToLogWithProgress(script string, log string, jobID string, emit progressEmitter) error {
 	if err := os.MkdirAll(filepath.Dir(log), 0o755); err != nil {
 		return err
@@ -837,11 +891,16 @@ func runShellScriptToLogWithProgress(script string, log string, jobID string, em
 	}
 	defer file.Close()
 	cmd := newHiddenCommand("/bin/sh", "-lc", script)
+	writeRunLogLine(file, "rt start job=%s", jobID)
+	logCommandStart(file, "shell", "/bin/sh", []string{"-lc", script}, cmd.Env)
 	parser := newRsyncProgressParser(jobID, emit)
-	writer := &progressLogWriter{file: file, parser: parser}
+	writer := newProgressLogWriter(file, parser)
 	cmd.Stdout = writer
 	cmd.Stderr = writer
-	return cmd.Run()
+	err = cmd.Run()
+	logCommandEnd(file, "shell", err)
+	writeRunLogLine(file, "rt end job=%s", jobID)
+	return err
 }
 
 func runRsyncDirectToLogWithProgress(job SyncJob, log string, jobID string, emit progressEmitter) error {
@@ -857,6 +916,7 @@ func runRsyncDirectToLogWithProgress(job SyncJob, log string, jobID string, emit
 		return err
 	}
 	defer file.Close()
+	writeRunLogLine(file, "rt start job=%s name=%s", jobID, job.Name)
 
 	stamp := time.Now().Format("20060102_150405")
 	backupDir := backupDirectoryName(job, stamp)
@@ -871,11 +931,16 @@ func runRsyncDirectToLogWithProgress(job SyncJob, log string, jobID string, emit
 		mkdirArgs := append(sshConfigArgsForRuntime(), host, "mkdir -p "+shellQuote(remoteParent))
 		mkdir := newHiddenCommand(ssh, mkdirArgs...)
 		mkdir.Env = toolEnv(os.Environ(), filepath.Dir(ssh))
-		mkdir.Stdout = file
-		mkdir.Stderr = file
+		logCommandStart(file, "ssh mkdir", ssh, mkdirArgs, mkdir.Env)
+		mkdirWriter := newProgressLogWriter(file, nil)
+		mkdir.Stdout = mkdirWriter
+		mkdir.Stderr = mkdirWriter
 		if err := mkdir.Run(); err != nil {
+			logCommandEnd(file, "ssh mkdir", err)
+			writeRunLogLine(file, "rt end job=%s", jobID)
 			return err
 		}
+		logCommandEnd(file, "ssh mkdir", nil)
 		destination = host + ":" + strings.TrimRight(remotePath, "/") + "/" + backupDir
 	} else {
 		parent := filepath.Join(destinationBase, filepath.FromSlash(backupDirectoryPrefix(job)))
@@ -888,17 +953,26 @@ func runRsyncDirectToLogWithProgress(job SyncJob, log string, jobID string, emit
 	args := rsyncArgsForJob(job, destination)
 	cmd := newHiddenCommand(rsync, args...)
 	cmd.Env = toolEnv(os.Environ(), filepath.Dir(rsync))
+	logCommandStart(file, "rsync", rsync, args, cmd.Env)
 	parser := newRsyncProgressParser(jobID, emit)
-	writer := &progressLogWriter{file: file, parser: parser}
+	writer := newProgressLogWriter(file, parser)
 	cmd.Stdout = writer
 	cmd.Stderr = writer
-	return cmd.Run()
+	err = cmd.Run()
+	logCommandEnd(file, "rsync", err)
+	writeRunLogLine(file, "rt end job=%s", jobID)
+	return err
 }
 
 type progressLogWriter struct {
-	mu     sync.Mutex
-	file   *os.File
-	parser *rsyncProgressParser
+	mu        sync.Mutex
+	file      *os.File
+	parser    *rsyncProgressParser
+	lineStart bool
+}
+
+func newProgressLogWriter(file *os.File, parser *rsyncProgressParser) *progressLogWriter {
+	return &progressLogWriter{file: file, parser: parser, lineStart: true}
 }
 
 func (w *progressLogWriter) Write(p []byte) (int, error) {
@@ -907,7 +981,21 @@ func (w *progressLogWriter) Write(p []byte) (int, error) {
 	if w.parser != nil {
 		w.parser.Write(p)
 	}
-	return w.file.Write(p)
+	for _, b := range p {
+		if w.lineStart {
+			if _, err := fmt.Fprintf(w.file, "[%s] ", logTimestamp()); err != nil {
+				return 0, err
+			}
+			w.lineStart = false
+		}
+		if _, err := w.file.Write([]byte{b}); err != nil {
+			return 0, err
+		}
+		if b == '\n' || b == '\r' {
+			w.lineStart = true
+		}
+	}
+	return len(p), nil
 }
 
 type rsyncProgressParser struct {

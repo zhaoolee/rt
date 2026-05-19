@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -214,6 +215,37 @@ func TestRunShellScriptToLogAppendsOutput(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "hello-from-rt") {
 		t.Fatalf("expected command output in log, got %q", string(data))
+	}
+	if !regexp.MustCompile(`\[\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}\]`).Match(data) {
+		t.Fatalf("expected YYYY-MM-DD-HH-MM-SS timestamp in log, got %q", string(data))
+	}
+}
+
+func TestProgressLogWriterPrefixesOutputWithTimestamp(t *testing.T) {
+	logFile := filepath.Join(t.TempDir(), "rt.log")
+	file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatalf("open log: %v", err)
+	}
+	writer := newProgressLogWriter(file, nil)
+	if _, err := writer.Write([]byte("first\nsecond\n")); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close log: %v", err)
+	}
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 timestamped lines, got %q", string(data))
+	}
+	for _, line := range lines {
+		if !regexp.MustCompile(`^\[\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}\] `).MatchString(line) {
+			t.Fatalf("line missing timestamp: %q", line)
+		}
 	}
 }
 

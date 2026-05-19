@@ -191,7 +191,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p build/bin/rsync/bin
-          for exe in rsync ssh ssh-keygen ssh-agent scp sftp; do
+          for exe in rsync ssh; do
             if [[ -f "/usr/bin/${exe}.exe" ]]; then
               cp "/usr/bin/${exe}.exe" build/bin/rsync/bin/
             fi
