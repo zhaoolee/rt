@@ -422,7 +422,7 @@ func listLocalDirectories(current string) ([]DirectoryEntry, error) {
 
 func listRemoteDirectories(machineID string, current string) ([]DirectoryEntry, error) {
 	remoteCommand := "find " + shellQuote(current) + " -mindepth 1 -maxdepth 1 -type d -print"
-	cmd := exec.Command("ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", machineID, remoteCommand)
+	cmd := newHiddenCommand("ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", machineID, remoteCommand)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -471,7 +471,7 @@ func syncCrontab(jobs []SyncJob) error {
 		return err
 	}
 	current := ""
-	if out, err := exec.Command("crontab", "-l").Output(); err == nil {
+	if out, err := newHiddenCommand("crontab", "-l").Output(); err == nil {
 		current = string(out)
 	}
 	kept := []string{}
@@ -491,7 +491,7 @@ func syncCrontab(jobs []SyncJob) error {
 	if content != "" {
 		content += "\n"
 	}
-	cmd := exec.Command("crontab", "-")
+	cmd := newHiddenCommand("crontab", "-")
 	cmd.Stdin = strings.NewReader(content)
 	return cmd.Run()
 }
@@ -598,7 +598,7 @@ func runShellScriptToLogWithProgress(script string, log string, jobID string, em
 		return err
 	}
 	defer file.Close()
-	cmd := exec.Command("/bin/sh", "-lc", script)
+	cmd := newHiddenCommand("/bin/sh", "-lc", script)
 	parser := newRsyncProgressParser(jobID, emit)
 	writer := &progressLogWriter{file: file, parser: parser}
 	cmd.Stdout = writer
