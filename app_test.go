@@ -157,6 +157,14 @@ func TestWindowsLocalPathForRsyncConvertsDrivePath(t *testing.T) {
 	}
 }
 
+func TestWindowsLocalPathForSSHKeepsDrivePath(t *testing.T) {
+	got := windowsLocalPathForSSHTool(`C:\Users\zhaoolee\.ssh\config`)
+	want := "C:/Users/zhaoolee/.ssh/config"
+	if got != want {
+		t.Fatalf("windows ssh path = %q, want %q", got, want)
+	}
+}
+
 func TestWindowsLocalPathForRsyncKeepsRemoteEndpoint(t *testing.T) {
 	got := rsyncEndpointForOS("oracle:/home/ubuntu/clash-sub", "windows")
 	want := "oracle:/home/ubuntu/clash-sub"

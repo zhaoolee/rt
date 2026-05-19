@@ -606,7 +606,7 @@ func sshConfigArgsForRuntime() []string {
 	if _, err := os.Stat(config); err != nil {
 		return nil
 	}
-	return []string{"-F", pathForMSYSTool(config)}
+	return []string{"-F", pathForSSHTool(config)}
 }
 
 func shellQuoteForArgString(s string) string {
@@ -673,6 +673,17 @@ func pathForMSYSTool(path string) string {
 	return windowsLocalPathForMSYSTool(path)
 }
 
+func pathForSSHTool(path string) string {
+	if runtime.GOOS != "windows" {
+		return path
+	}
+	return windowsLocalPathForSSHTool(path)
+}
+
+func windowsLocalPathForSSHTool(path string) string {
+	return strings.ReplaceAll(path, "\\", "/")
+}
+
 func windowsLocalPathForMSYSTool(path string) string {
 	path = strings.ReplaceAll(path, "\\", "/")
 	if len(path) >= 2 && path[1] == ':' && isASCIIAlpha(path[0]) {
@@ -701,7 +712,7 @@ func toolEnv(env []string, toolDir string) []string {
 		return env
 	}
 	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
-		env = upsertEnv(env, "HOME", pathForMSYSTool(home))
+		env = upsertEnv(env, "HOME", windowsLocalPathForSSHTool(home))
 	}
 	return env
 }
