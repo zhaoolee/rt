@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import './App.css';
 import { DeleteJob, GetLogs, GetStatus, ListDirectories, ListJobs, ListMachines, RunJobNow, SaveJob } from '../wailsjs/go/main/App';
 import { main } from '../wailsjs/go/models';
+import { EventsOn } from '../wailsjs/runtime/runtime';
 
 type Job = main.SyncJob;
 type LogEntry = main.LogEntry;
@@ -9,6 +10,18 @@ type Status = main.Status;
 type Machine = main.Machine;
 type DirectoryEntry = main.DirectoryEntry;
 type EndpointKind = 'source' | 'destination';
+
+type CronField = {
+  values: Set<number>;
+  restricted: boolean;
+};
+
+type SyncProgress = {
+  jobId: string;
+  percent: number;
+  text: string;
+  state: 'running' | 'done' | 'error';
+};
 
 type PickerState = {
   kind: EndpointKind;
@@ -43,6 +56,143 @@ const previewMachines: Machine[] = [
   { id: 'pi', name: 'pi', kind: 'ssh', address: '~/.ssh/config' } as Machine,
 ];
 
+function startOfNextMinute(now: Date) {
+  const next = new Date(now);
+  next.setSeconds(0, 0);
+  next.setMinutes(next.getMinutes() + 1);
+  return next;
+}
+
+function parseCronField(raw: string, min: number, max: number, normalize?: (value: number) => number): CronField | null {
+  const values = new Set<number>();
+  const parts = raw.split(',').map((part) => part.trim()).filter(Boolean);
+  if (parts.length === 0) return null;
+
+  for (const part of parts) {
+    const [rangePart, stepPart] = part.split('/');
+    const step = stepPart ? Number(stepPart) : 1;
+    if (!Number.isInteger(step) || step <= 0) return null;
+
+    let start = min;
+    let end = max;
+    if (rangePart !== '*') {
+      if (rangePart.includes('-')) {
+        const [from, to] = rangePart.split('-').map(Number);
+        if (!Number.isInteger(from) || !Number.isInteger(to)) return null;
+        start = from;
+        end = to;
+      } else {
+        const value = Number(rangePart);
+        if (!Number.isInteger(value)) return null;
+        start = value;
+        end = value;
+      }
+    }
+
+    for (let value = start; value <= end; value += step) {
+      const normalized = normalize ? normalize(value) : value;
+      if (normalized >= min && normalized <= max) values.add(normalized);
+    }
+  }
+
+  return values.size ? { values, restricted: raw.trim() !== '*' } : null;
+}
+
+function nextPresetRun(schedule: string, now: Date) {
+  const next = new Date(now);
+  next.setMilliseconds(0);
+  switch (schedule) {
+    case '@hourly':
+      next.setMinutes(0, 0, 0);
+      next.setHours(next.getHours() + 1);
+      return next;
+    case '@daily':
+      next.setHours(0, 0, 0, 0);
+      next.setDate(next.getDate() + 1);
+      return next;
+    case '@weekly':
+      next.setHours(0, 0, 0, 0);
+      next.setDate(next.getDate() + ((7 - next.getDay()) || 7));
+      return next;
+    case '@monthly':
+      next.setHours(0, 0, 0, 0);
+      next.setMonth(next.getMonth() + 1, 1);
+      return next;
+    case '@yearly':
+    case '@annually':
+      next.setHours(0, 0, 0, 0);
+      next.setFullYear(next.getFullYear() + 1, 0, 1);
+      return next;
+    default:
+      return null;
+  }
+}
+
+function nextCronRun(schedule: string, now: Date) {
+  const trimmed = schedule.trim();
+  const preset = nextPresetRun(trimmed, now);
+  if (preset) return preset;
+
+  const parts = trimmed.split(/\s+/);
+  if (parts.length !== 5) return null;
+
+  const [minuteRaw, hourRaw, dayRaw, monthRaw, weekdayRaw] = parts;
+  const minutes = parseCronField(minuteRaw, 0, 59);
+  const hours = parseCronField(hourRaw, 0, 23);
+  const days = parseCronField(dayRaw, 1, 31);
+  const months = parseCronField(monthRaw, 1, 12);
+  const weekdays = parseCronField(weekdayRaw, 0, 6, (value) => value === 7 ? 0 : value);
+  if (!minutes || !hours || !days || !months || !weekdays) return null;
+
+  const candidate = startOfNextMinute(now);
+  const maxMinutes = 60 * 24 * 366;
+  for (let i = 0; i < maxMinutes; i += 1) {
+    const dayMatch = days.values.has(candidate.getDate());
+    const weekdayMatch = weekdays.values.has(candidate.getDay());
+    const dateMatch = days.restricted && weekdays.restricted ? dayMatch || weekdayMatch : dayMatch && weekdayMatch;
+    if (
+      minutes.values.has(candidate.getMinutes()) &&
+      hours.values.has(candidate.getHours()) &&
+      months.values.has(candidate.getMonth() + 1) &&
+      dateMatch
+    ) {
+      return new Date(candidate);
+    }
+    candidate.setMinutes(candidate.getMinutes() + 1);
+  }
+  return null;
+}
+
+function formatCountdown(ms: number) {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (days > 0) return `${days}天 ${hours}小时 ${minutes}分`;
+  if (hours > 0) return `${hours}小时 ${minutes}分 ${seconds}秒`;
+  if (minutes > 0) return `${minutes}分 ${seconds}秒`;
+  return `${seconds}秒`;
+}
+
+function formatNextRun(next: Date) {
+  return next.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
+
+function nextRunLabel(job: Job, now: Date) {
+  if (!job.enabled) return '已暂停';
+  if (job.schedule.trim() === '@reboot') return '下次执行：系统启动后';
+  const next = nextCronRun(job.schedule, now);
+  if (!next) return '下次执行：无法计算';
+  return `下次执行 ${formatCountdown(next.getTime() - now.getTime())} · ${formatNextRun(next)}`;
+}
+
 function App() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -50,8 +200,13 @@ function App() {
   const [status, setStatus] = useState<Status | null>(null);
   const [form, setForm] = useState<Job>(emptyJob);
   const [selectedJobId, setSelectedJobId] = useState('');
-  const [notice, setNotice] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [formNotice, setFormNotice] = useState('');
+  const [jobError, setJobError] = useState('');
+  const [formBusy, setFormBusy] = useState(false);
+  const [deletingJobId, setDeletingJobId] = useState('');
+  const [runningJobId, setRunningJobId] = useState('');
+  const [progressByJob, setProgressByJob] = useState<Record<string, SyncProgress>>({});
+  const [now, setNow] = useState(() => new Date());
   const [picker, setPicker] = useState<PickerState | null>(null);
 
   const selectedLog = useMemo(() => logs.find((log) => log.jobId === selectedJobId) || logs[0], [logs, selectedJobId]);
@@ -74,7 +229,24 @@ function App() {
   }
 
   useEffect(() => {
-    refresh().catch((err) => setNotice(String(err)));
+    refresh().catch((err) => setJobError(String(err)));
+  }, []);
+
+  useEffect(() => {
+    if (!wailsReady) return;
+    const cancel = EventsOn('sync-progress', (progress: SyncProgress) => {
+      if (!progress?.jobId) return;
+      setProgressByJob((prev) => ({ ...prev, [progress.jobId]: progress }));
+      if (progress.state === 'error') {
+        setJobError(progress.text || '同步失败');
+      }
+    });
+    return cancel;
+  }, [wailsReady]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 1000);
+    return () => window.clearInterval(timer);
   }, []);
 
   function setField(key: keyof Job, value: string | boolean) {
@@ -101,47 +273,52 @@ function App() {
   }
 
   async function save() {
-    setBusy(true);
-    setNotice('');
+    setFormBusy(true);
+    setFormNotice('');
     try {
       const saved = await SaveJob(form);
-      setNotice(`已保存：${saved.name}，crontab 已同步`);
+      setFormNotice(`已保存：${saved.name}，crontab 已同步`);
       setForm(emptyJob);
       setSelectedJobId(saved.id);
       await refresh();
     } catch (err) {
-      setNotice(String(err));
+      setFormNotice(String(err));
     } finally {
-      setBusy(false);
+      setFormBusy(false);
     }
   }
 
   async function remove(id: string) {
     if (!confirm('删除这个同步任务？对应 crontab 记录也会移除。')) return;
-    setBusy(true);
+    setDeletingJobId(id);
+    setJobError('');
     try {
       await DeleteJob(id);
-      setNotice('已删除任务');
       await refresh();
     } catch (err) {
-      setNotice(String(err));
+      setJobError(String(err));
     } finally {
-      setBusy(false);
+      setDeletingJobId('');
     }
   }
 
   async function runNow(id: string) {
-    setBusy(true);
-    setNotice('正在执行 rsync，同步完成后会刷新日志…');
+    setRunningJobId(id);
+    setProgressByJob((prev) => ({ ...prev, [id]: { jobId: id, percent: 0, text: '准备同步', state: 'running' } }));
+    setJobError('');
     try {
       await RunJobNow(id);
-      setNotice('同步完成，日志已刷新');
       await refresh();
     } catch (err) {
-      setNotice(String(err));
+      setJobError(String(err));
       await refresh();
     } finally {
-      setBusy(false);
+      setRunningJobId('');
+      setProgressByJob((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
     }
   }
 
@@ -167,7 +344,7 @@ function App() {
       const entries = await ListDirectories(machineId, path);
       setPicker({ kind, machineId, currentPath: path, entries: entries || [], loading: false });
     } catch (err) {
-      setNotice(`无法读取目录：${String(err)}`);
+      setFormNotice(`无法读取目录：${String(err)}`);
       setPicker({ kind, machineId, currentPath: path, entries: [], loading: false });
     }
   }
@@ -249,8 +426,8 @@ function App() {
             {['@hourly', '@daily', '@weekly', '*/30 * * * *', '0 2 * * *'].map((value) => <button key={value} onClick={() => setField('schedule', value)}>{value}</button>)}
           </div>
           <label className="switch"><input type="checkbox" checked={form.enabled} onChange={(e) => setField('enabled', e.target.checked)} /> 启用 crontab 定时</label>
-          <button className="primary" disabled={busy} onClick={save}>{busy ? '处理中…' : '保存并同步 crontab'}</button>
-          {notice && <p className="notice">{notice}</p>}
+          <button className="primary" disabled={formBusy} onClick={save}>{formBusy ? '保存中…' : '保存并同步 crontab'}</button>
+          {formNotice && <p className="notice">{formNotice}</p>}
         </div>
 
         <div className="panel jobs">
@@ -261,21 +438,36 @@ function App() {
             </div>
             <button className="ghost" onClick={() => refresh()}>刷新</button>
           </div>
+          {jobError && <p className="notice job-notice">{jobError}</p>}
           {jobs.length === 0 && <div className="empty">暂无任务，先在左侧创建一个同步计划。</div>}
-          {jobs.map((job) => (
-            <article className={`job ${selectedJobId === job.id ? 'active' : ''}`} key={job.id} onClick={() => setSelectedJobId(job.id)}>
+          {jobs.map((job) => {
+            const isRunning = runningJobId === job.id;
+            const isDeleting = deletingJobId === job.id;
+            const isLocked = isRunning || isDeleting;
+            const progress = progressByJob[job.id];
+            const progressPercent = progress?.percent ?? 0;
+            const scheduleLabel = nextRunLabel(job, now);
+            return (
+            <article
+              aria-busy={isRunning}
+              className={`job ${selectedJobId === job.id ? 'active' : ''} ${isLocked ? 'locked' : ''}`}
+              key={job.id}
+              onClick={() => { if (!isLocked) setSelectedJobId(job.id); }}
+            >
               <div>
                 <strong>{job.name}</strong>
                 <p>{job.source} → {job.destination}</p>
-                <small>{job.enabled ? '已启用' : '已暂停'} · {job.schedule} · {job.options}</small>
+                <small>{isRunning ? `同步中 ${progressPercent}%` : job.enabled ? '已启用' : '已暂停'} · {job.schedule} · {job.options}</small>
+                {job.enabled && <div className="next-run">{scheduleLabel}</div>}
               </div>
               <div className="actions">
-                <button onClick={(e) => { e.stopPropagation(); runNow(job.id); }}>立即同步</button>
-                <button onClick={(e) => { e.stopPropagation(); edit(job); }}>编辑</button>
-                <button onClick={(e) => { e.stopPropagation(); remove(job.id); }}>删除</button>
+                <button disabled={isLocked} onClick={(e) => { e.stopPropagation(); runNow(job.id); }}>{isRunning ? '同步中…' : '立即同步'}</button>
+                <button disabled={isLocked} onClick={(e) => { e.stopPropagation(); edit(job); }}>编辑</button>
+                <button disabled={isLocked} onClick={(e) => { e.stopPropagation(); remove(job.id); }}>{isDeleting ? '删除中…' : '删除'}</button>
               </div>
+              {isRunning && <div className="job-progress-overlay"><span>同步中 {progressPercent}%</span><i><b style={{ width: `${progressPercent}%` }} /></i></div>}
             </article>
-          ))}
+          );})}
         </div>
       </section>
 

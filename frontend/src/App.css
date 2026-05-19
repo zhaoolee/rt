@@ -47,6 +47,8 @@
 .dot { width: 10px; height: 10px; border-radius: 99px; background: #111; display: block; box-shadow: 0 0 0 8px rgba(0,0,0,.06); }
 
 .grid { display: grid; grid-template-columns: minmax(380px, 520px) 1fr; gap: 24px; }
+.jobs { order: 1; }
+.composer { order: 2; }
 .panel { padding: 24px; }
 .panel-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 22px; }
 .panel h2 { margin: 4px 0 0; font-size: 28px; letter-spacing: -.05em; }
@@ -115,6 +117,8 @@ input:focus, select:focus { border-color: #111; box-shadow: 0 0 0 4px rgba(0,0,0
 .jobs { min-height: 520px; }
 .empty { color: #888; border: 1px dashed #d4d4cf; border-radius: 22px; padding: 28px; text-align: center; }
 .job {
+  position: relative;
+  overflow: hidden;
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 16px;
@@ -127,12 +131,94 @@ input:focus, select:focus { border-color: #111; box-shadow: 0 0 0 4px rgba(0,0,0
 }
 .job:hover { transform: translateY(-1px); }
 .job.active { border-color: #111; background: #fff; }
+.job.locked {
+  cursor: wait;
+  transform: none;
+}
+.job.locked:hover { transform: none; }
+.job.locked > div:not(.job-progress-overlay) {
+  pointer-events: none;
+}
 .job strong { font-size: 18px; letter-spacing: -.03em; }
 .job p { color: #4a4a47; margin: 8px 0; word-break: break-all; }
 .job small { color: #8a8a86; }
+.next-run {
+  display: inline-flex;
+  width: fit-content;
+  margin-top: 10px;
+  border: 1px solid rgba(0,0,0,.08);
+  border-radius: 999px;
+  background: #eeeeea;
+  color: #171717;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 700;
+}
 .actions { display: flex; flex-direction: column; gap: 8px; }
 .actions button { white-space: nowrap; }
 .actions button:first-child { background: #111; color: white; border-color: #111; }
+.actions button:disabled {
+  cursor: wait;
+  opacity: .55;
+}
+.job-progress-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border-radius: inherit;
+  background: rgba(255,255,255,.64);
+  color: #222;
+  pointer-events: auto;
+  backdrop-filter: blur(2px);
+}
+.job-progress-overlay span {
+  border: 1px solid rgba(0,0,0,.08);
+  border-radius: 999px;
+  background: rgba(255,255,255,.78);
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: 0 10px 24px rgba(0,0,0,.08);
+}
+.job-progress-overlay i {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 8px;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(0,0,0,.08);
+}
+.job-progress-overlay i b {
+  position: relative;
+  display: block;
+  height: 100%;
+  min-width: 2%;
+  overflow: hidden;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(0,0,0,.24), rgba(0,0,0,.58));
+  transition: width .24s ease;
+}
+.job-progress-overlay i b::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.34), transparent);
+  animation: job-progress-shine 1.4s ease-in-out infinite;
+}
+
+@keyframes job-progress-shine {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
 
 .log-panel { margin-top: 24px; }
 .log-panel pre {

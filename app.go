@@ -13,7 +13,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -70,6 +72,13 @@ type Status struct {
 	RsyncAvailable   bool   `json:"rsyncAvailable"`
 	StoreDir         string `json:"storeDir"`
 	Message          string `json:"message"`
+}
+
+type SyncProgress struct {
+	JobID   string `json:"jobId"`
+	Percent int    `json:"percent"`
+	Text    string `json:"text"`
+	State   string `json:"state"`
 }
 
 // NewApp creates a new App application struct
@@ -181,9 +190,12 @@ func (a *App) RunJobNow(id string) error {
 			if _, err := normalizeJob(job); err != nil {
 				return err
 			}
-			if err := runShellScriptToLog(buildRunScript(job, logPath(job.ID)), logPath(job.ID)); err != nil {
+			a.emitSyncProgress(job.ID, 0, "准备同步", "running")
+			if err := runShellScriptToLogWithProgress(buildRunScript(job, logPath(job.ID)), logPath(job.ID), job.ID, a.emitSyncProgress); err != nil {
+				a.emitSyncProgress(job.ID, 0, err.Error(), "error")
 				return err
 			}
+			a.emitSyncProgress(job.ID, 100, "同步完成", "done")
 			jobs[i].LastRunAt = time.Now().Format(time.RFC3339)
 			_ = saveJobs(jobs)
 			return nil
@@ -465,7 +477,21 @@ func buildRunScript(job SyncJob, log string) string {
 	backupPrefix := backupDirectoryPrefix(job)
 	destinationBase := strings.TrimRight(job.Destination, "/")
 	destination := shellQuote(destinationBase) + "/$backup_dir"
-	return fmt.Sprintf("mkdir -p %s; backup_dir=%s/$(date '+%%Y%%m%%d_%%H%%M%%S'); %s; echo '--- rt start '$(date '+%%F %%T')' %s -> '$backup_dir' ---'; rsync %s %s %s; code=$?; echo '--- rt end '$(date '+%%F %%T')' exit='$code' ---'; exit $code", shellQuote(dir), shellQuote(backupPrefix), buildPrepareDestinationParentScript(destinationBase, backupPrefix), shellSafe(job.Name), job.Options, shellQuote(job.Source), destination)
+	return fmt.Sprintf("mkdir -p %s; backup_dir=%s/$(date '+%%Y%%m%%d_%%H%%M%%S'); %s; echo '--- rt start '$(date '+%%F %%T')' %s -> '$backup_dir' ---'; rsync %s %s %s; code=$?; echo '--- rt end '$(date '+%%F %%T')' exit='$code' ---'; exit $code", shellQuote(dir), shellQuote(backupPrefix), buildPrepareDestinationParentScript(destinationBase, backupPrefix), shellSafe(job.Name), ensureRsyncProgressOptions(job.Options), shellQuote(job.Source), destination)
+}
+
+func ensureRsyncProgressOptions(options string) string {
+	options = strings.TrimSpace(options)
+	if options == "" {
+		options = "-avh --delete"
+	}
+	if !strings.Contains(options, "--info=progress2") && !strings.Contains(options, "progress2") {
+		options += " --info=progress2"
+	}
+	if !strings.Contains(options, "--outbuf=") {
+		options += " --outbuf=L"
+	}
+	return strings.TrimSpace(options)
 }
 
 func buildPrepareDestinationParentScript(destinationBase string, backupPrefix string) string {
@@ -530,6 +556,12 @@ func sanitizePathName(name string) string {
 }
 
 func runShellScriptToLog(script string, log string) error {
+	return runShellScriptToLogWithProgress(script, log, "", nil)
+}
+
+type progressEmitter func(jobID string, percent int, text string, state string)
+
+func runShellScriptToLogWithProgress(script string, log string, jobID string, emit progressEmitter) error {
 	if err := os.MkdirAll(filepath.Dir(log), 0o755); err != nil {
 		return err
 	}
@@ -539,9 +571,93 @@ func runShellScriptToLog(script string, log string) error {
 	}
 	defer file.Close()
 	cmd := exec.Command("/bin/sh", "-lc", script)
-	cmd.Stdout = file
-	cmd.Stderr = file
+	parser := newRsyncProgressParser(jobID, emit)
+	writer := &progressLogWriter{file: file, parser: parser}
+	cmd.Stdout = writer
+	cmd.Stderr = writer
 	return cmd.Run()
+}
+
+type progressLogWriter struct {
+	mu     sync.Mutex
+	file   *os.File
+	parser *rsyncProgressParser
+}
+
+func (w *progressLogWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.parser != nil {
+		w.parser.Write(p)
+	}
+	return w.file.Write(p)
+}
+
+type rsyncProgressParser struct {
+	jobID   string
+	emit    progressEmitter
+	buffer  string
+	lastPct int
+}
+
+func newRsyncProgressParser(jobID string, emit progressEmitter) *rsyncProgressParser {
+	return &rsyncProgressParser{jobID: jobID, emit: emit, lastPct: -1}
+}
+
+func (p *rsyncProgressParser) Write(data []byte) {
+	if p.emit == nil || p.jobID == "" {
+		return
+	}
+	p.buffer += string(data)
+	for {
+		idx := strings.IndexAny(p.buffer, "\r\n")
+		if idx < 0 {
+			p.parseLine(p.buffer)
+			if len(p.buffer) > 512 {
+				p.buffer = p.buffer[len(p.buffer)-512:]
+			}
+			return
+		}
+		line := p.buffer[:idx]
+		p.parseLine(line)
+		p.buffer = strings.TrimLeft(p.buffer[idx+1:], "\r\n")
+	}
+}
+
+var rsyncProgressRe = regexp.MustCompile(`(?m)([0-9]{1,3})%`)
+
+func (p *rsyncProgressParser) parseLine(line string) {
+	percent, ok := parseRsyncProgressPercent(line)
+	if !ok || percent == p.lastPct {
+		return
+	}
+	p.lastPct = percent
+	p.emit(p.jobID, percent, strings.TrimSpace(line), "running")
+}
+
+func parseRsyncProgressPercent(line string) (int, bool) {
+	match := rsyncProgressRe.FindStringSubmatch(line)
+	if len(match) < 2 {
+		return 0, false
+	}
+	percent, err := strconv.Atoi(match[1])
+	if err != nil {
+		return 0, false
+	}
+	if percent < 0 {
+		percent = 0
+	}
+	if percent > 100 {
+		percent = 100
+	}
+	return percent, true
+}
+
+func (a *App) emitSyncProgress(jobID string, percent int, text string, state string) {
+	if a.ctx == nil {
+		return
+	}
+	wailsruntime.EventsEmit(a.ctx, "sync-progress", SyncProgress{JobID: jobID, Percent: percent, Text: text, State: state})
 }
 
 func shellQuote(s string) string {

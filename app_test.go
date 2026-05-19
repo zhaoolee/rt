@@ -96,10 +96,31 @@ func TestBuildRunScriptWritesIntoTimestampedBackupDirectory(t *testing.T) {
 		t.Fatalf("normalize: %v", err)
 	}
 	script := buildRunScript(job, "/tmp/rt/logs/job-123.log")
-	for _, want := range []string{"backup_dir='v2fy/备份_banana'/$(date '+%Y%m%d_%H%M%S')", "mkdir -p '/backup/v2fy/备份_banana'", "rsync -az 'v2fy:/opt/banana' '/backup'/$backup_dir"} {
+	for _, want := range []string{"backup_dir='v2fy/备份_banana'/$(date '+%Y%m%d_%H%M%S')", "mkdir -p '/backup/v2fy/备份_banana'", "rsync -az --info=progress2 --outbuf=L 'v2fy:/opt/banana' '/backup'/$backup_dir"} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("script missing %q in: %s", want, script)
 		}
+	}
+}
+
+func TestEnsureRsyncProgressOptions(t *testing.T) {
+	got := ensureRsyncProgressOptions("-az")
+	for _, want := range []string{"-az", "--info=progress2", "--outbuf=L"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("ensureRsyncProgressOptions missing %q in %q", want, got)
+		}
+	}
+	got = ensureRsyncProgressOptions("-az --info=progress2 --outbuf=L")
+	if strings.Count(got, "--info=progress2") != 1 || strings.Count(got, "--outbuf=L") != 1 {
+		t.Fatalf("progress options duplicated: %q", got)
+	}
+}
+
+func TestParseRsyncProgressPercent(t *testing.T) {
+	line := "     12.34M  42%   10.20MB/s    0:00:01 (xfr#3, to-chk=4/10)"
+	got, ok := parseRsyncProgressPercent(line)
+	if !ok || got != 42 {
+		t.Fatalf("parseRsyncProgressPercent() = %d, %v; want 42, true", got, ok)
 	}
 }
 
@@ -115,6 +136,23 @@ func TestRunShellScriptToLogAppendsOutput(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "hello-from-rt") {
 		t.Fatalf("expected command output in log, got %q", string(data))
+	}
+}
+
+func TestRunShellScriptToLogWithProgressEmitsPercent(t *testing.T) {
+	logFile := filepath.Join(t.TempDir(), "rt.log")
+	percents := []int{}
+	err := runShellScriptToLogWithProgress("printf '       10  10%% x\\r       90  90%% x\\n'", logFile, "job-1", func(jobID string, percent int, text string, state string) {
+		if jobID != "job-1" {
+			t.Fatalf("jobID = %q, want job-1", jobID)
+		}
+		percents = append(percents, percent)
+	})
+	if err != nil {
+		t.Fatalf("runShellScriptToLogWithProgress: %v", err)
+	}
+	if len(percents) != 2 || percents[0] != 10 || percents[1] != 90 {
+		t.Fatalf("percents = %v, want [10 90]", percents)
 	}
 }
 
