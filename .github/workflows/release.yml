@@ -8,6 +8,9 @@ on:
 permissions:
   contents: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     name: Build ${{ matrix.name }}
@@ -72,7 +75,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
@@ -116,25 +119,30 @@ jobs:
           sudo python3 - <<'PY'
           from pathlib import Path
 
-          for path in Path('/etc/apt/sources.list.d').glob('*.sources'):
-              text = path.read_text()
-              if 'ubuntu.com/ubuntu' not in text:
+          for path in Path('/etc/apt/sources.list.d').glob('ubuntu*.sources'):
+              if path.name == 'ubuntu-arm64-ports.sources':
                   continue
-              blocks = text.split('\n\n')
-              changed = False
+              blocks = path.read_text().split('\n\n')
               new_blocks = []
               for block in blocks:
-                  if 'ubuntu.com/ubuntu' in block and 'Architectures:' not in block:
-                      lines = block.splitlines()
+                  if not block.strip():
+                      new_blocks.append(block)
+                      continue
+                  lines = block.splitlines()
+                  if not any(line.startswith('Types: deb') for line in lines):
+                      new_blocks.append(block)
+                      continue
+                  for i, line in enumerate(lines):
+                      if line.startswith('Architectures:'):
+                          lines[i] = 'Architectures: amd64'
+                          break
+                  else:
                       for i, line in enumerate(lines):
                           if line.startswith('Types:'):
                               lines.insert(i + 1, 'Architectures: amd64')
-                              changed = True
                               break
-                      block = '\n'.join(lines)
-                  new_blocks.append(block)
-              if changed:
-                  path.write_text('\n\n'.join(new_blocks))
+                  new_blocks.append('\n'.join(lines))
+              path.write_text('\n\n'.join(new_blocks))
           PY
 
           sudo tee /etc/apt/sources.list.d/ubuntu-arm64-ports.sources >/dev/null <<'EOF'
