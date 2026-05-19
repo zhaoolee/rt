@@ -350,10 +350,30 @@ func listMachines() ([]Machine, error) {
 }
 
 func sshConfigPath() string {
-	return sshConfigPathFromEnv(os.Getenv, func() (string, error) { return os.UserHomeDir() })
+	home := sshHomeDirFromEnv(os.Getenv, func() (string, error) { return os.UserHomeDir() })
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".ssh", "config")
 }
 
 func sshConfigPathFromEnv(getenv func(string) string, userHomeDir func() (string, error)) string {
+	home := sshHomeDirFromEnv(getenv, userHomeDir)
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".ssh", "config")
+}
+
+func sshKnownHostsPath() string {
+	home := sshHomeDirFromEnv(os.Getenv, func() (string, error) { return os.UserHomeDir() })
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".ssh", "known_hosts")
+}
+
+func sshHomeDirFromEnv(getenv func(string) string, userHomeDir func() (string, error)) string {
 	home, err := userHomeDir()
 	if err != nil || strings.TrimSpace(home) == "" {
 		home = strings.TrimSpace(getenv("HOME"))
@@ -371,7 +391,7 @@ func sshConfigPathFromEnv(getenv func(string) string, userHomeDir func() (string
 	if strings.TrimSpace(home) == "" {
 		return ""
 	}
-	return filepath.Join(home, ".ssh", "config")
+	return home
 }
 
 func parseSSHConfigHosts(config string) []string {
@@ -600,13 +620,31 @@ func rsyncRemoteShellForRuntime() string {
 
 func sshConfigArgsForRuntime() []string {
 	config := sshConfigPath()
-	if config == "" {
-		return nil
+	configForArgs := ""
+	if config != "" {
+		if _, err := os.Stat(config); err == nil {
+			configForArgs = pathForSSHTool(config)
+		}
 	}
-	if _, err := os.Stat(config); err != nil {
-		return nil
+	knownHostsForArgs := ""
+	if knownHosts := sshKnownHostsPath(); knownHosts != "" {
+		knownHostsForArgs = pathForSSHTool(knownHosts)
 	}
-	return []string{"-F", pathForSSHTool(config)}
+	return sshArgsForOS(configForArgs, knownHostsForArgs, runtime.GOOS)
+}
+
+func sshArgsForOS(config string, knownHosts string, goos string) []string {
+	args := []string{}
+	if config != "" {
+		args = append(args, "-F", config)
+	}
+	if goos == "windows" {
+		if knownHosts != "" {
+			args = append(args, "-o", "UserKnownHostsFile="+knownHosts)
+		}
+		args = append(args, "-o", "StrictHostKeyChecking=accept-new")
+	}
+	return args
 }
 
 func shellQuoteForArgString(s string) string {
@@ -840,7 +878,7 @@ func logCommandStart(file *os.File, label string, executable string, args []stri
 	if runtime.GOOS == "windows" {
 		writeRunLogLine(file, "%s env HOME=%s USERPROFILE=%s", label, envValue(env, "HOME"), envValue(env, "USERPROFILE"))
 		writeRunLogLine(file, "%s ssh config: %s", label, fileStateForLog(sshConfigPath()))
-		writeRunLogLine(file, "%s known_hosts: %s", label, fileStateForLog(filepath.Join(windowsLocalPathForSSHTool(envValue(env, "HOME")), ".ssh", "known_hosts")))
+		writeRunLogLine(file, "%s known_hosts: %s", label, fileStateForLog(sshKnownHostsPath()))
 	}
 }
 

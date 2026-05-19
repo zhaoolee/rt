@@ -203,6 +203,27 @@ func TestRsyncArgsKeepExistingRemoteShell(t *testing.T) {
 	}
 }
 
+func TestWindowsSSHArgsPinKnownHostsAndAcceptNew(t *testing.T) {
+	args := sshArgsForOS("C:/Users/lee/.ssh/config", "C:/Users/lee/.ssh/known_hosts", "windows")
+	joined := strings.Join(args, " ")
+	for _, want := range []string{"-F C:/Users/lee/.ssh/config", "UserKnownHostsFile=C:/Users/lee/.ssh/known_hosts", "StrictHostKeyChecking=accept-new"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("windows ssh args missing %q in %#v", want, args)
+		}
+	}
+}
+
+func TestNonWindowsSSHArgsDoNotChangeHostKeyPolicy(t *testing.T) {
+	args := sshArgsForOS("/home/lee/.ssh/config", "/home/lee/.ssh/known_hosts", "linux")
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "-F /home/lee/.ssh/config") {
+		t.Fatalf("ssh args missing config: %#v", args)
+	}
+	if strings.Contains(joined, "StrictHostKeyChecking") || strings.Contains(joined, "UserKnownHostsFile") {
+		t.Fatalf("non-windows ssh args should not alter host key policy: %#v", args)
+	}
+}
+
 func TestRunShellScriptToLogAppendsOutput(t *testing.T) {
 	logFile := filepath.Join(t.TempDir(), "rt.log")
 	err := runShellScriptToLog("echo hello-from-rt", logFile)
